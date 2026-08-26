@@ -45,35 +45,63 @@ def srt_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-# что именно качать: имена вроде large-v3-turbo живут в разных репозиториях,
-# поэтому маппинг и список файлов берём у самой faster-whisper, а не выдумываем
-MODEL_FILES = [
-    "config.json",
-    "preprocessor_config.json",
-    "model.bin",
-    "tokenizer.json",
-    "vocabulary.*",
-]
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3-turbo-q5_0")
 
 
-def _repo_id(name):
-    try:
-        from faster_whisper.utils import _MODELS
+def model_path(name=MODEL_NAME):
+    """Путь к файлу модели. В WHISPER_MODEL можно положить и готовый путь к .bin."""
+    from pywhispercpp.constants import MODELS_DIR
 
-        return _MODELS.get(name, name)
-    except ImportError:
-        return name
+    direct = Path(name).expanduser()
+    if direct.is_file():
+        return direct
+    return Path(MODELS_DIR) / f"ggml-{name}.bin"
+
+
+def model_url(name=MODEL_NAME):
+    from pywhispercpp.constants import MODELS_BASE_URL, MODELS_PREFIX_URL
+
+    return f"{MODELS_BASE_URL}/{MODELS_PREFIX_URL}-{name}.bin"
 
 
 def model_is_downloaded(name=MODEL_NAME):
-    """Лежит ли модель в кэше — чтобы не лезть в сеть без спроса."""
-    try:
-        from huggingface_hub import snapshot_download
+    return model_path(name).is_file()
 
-        snapshot_download(_repo_id(name), allow_patterns=MODEL_FILES, local_files_only=True)
-        return True
+
+def model_size(name=MODEL_NAME):
+    """Вес модели: с диска, если она уже есть, иначе спрашиваем у сервера.
+
+    Отдаёт None, если файла нет и до сети не достучались — врать оценкой не нужно.
+    """
+    path = model_path(name)
+    if path.is_file():
+        return path.stat().st_size
+    try:
+        import urllib.request
+
+        request = urllib.request.Request(model_url(name), method="HEAD")
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return int(response.headers.get("Content-Length") or 0) or None
     except Exception:
-        return False
+        return None
+
+
+def download_model(name=MODEL_NAME, on_progress=None):
+    """Качаем в .part и переименовываем в конце: оборванная закачка не притворится моделью."""
+    import urllib.request
+
+    path = model_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_suffix(".part")
+    with urllib.request.urlopen(model_url(name), timeout=60) as response, open(part, "wb") as out:
+        total = int(response.headers.get("Content-Length") or 0)
+        done = 0
+        while chunk := response.read(1 << 20):
+            out.write(chunk)
+            done += len(chunk)
+            if on_progress and total:
+                on_progress(done / total * 100)
+    part.rename(path)
 
 
 def human_size(num_bytes):
@@ -82,59 +110,39 @@ def human_size(num_bytes):
     return f"{num_bytes / 1024 ** 2:.0f} МБ"
 
 
-def model_size(name=MODEL_NAME):
-    """Сколько весит модель. Из кэша, если она уже скачана, иначе спрашиваем Hugging Face.
+def video_duration(video):
+    import av
 
-    Отдаёт None, если модели нет и до сети не достучались — врать размером не нужно.
-    """
-    from fnmatch import fnmatch
-
-    from huggingface_hub import HfApi, snapshot_download
-
-    try:
-        path = snapshot_download(_repo_id(name), allow_patterns=MODEL_FILES, local_files_only=True)
-        return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
-    except Exception:
-        pass
-    try:
-        info = HfApi().model_info(_repo_id(name), files_metadata=True)
-        return sum(
-            f.size or 0
-            for f in info.siblings
-            if any(fnmatch(f.rfilename, pattern) for pattern in MODEL_FILES)
-        )
-    except Exception:
-        return None
-
-
-def download_model(name=MODEL_NAME, tqdm_class=None):
-    from huggingface_hub import snapshot_download
-
-    kwargs = {"tqdm_class": tqdm_class} if tqdm_class else {}
-    snapshot_download(_repo_id(name), allow_patterns=MODEL_FILES, **kwargs)
+    with av.open(str(video)) as container:
+        return (container.duration or 0) / 1_000_000
 
 
 def transcribe(video, lang, out, log=print, model_name=MODEL_NAME):
-    from faster_whisper import WhisperModel
+    from pywhispercpp.model import Model
 
-    model = WhisperModel(model_name, device="auto", compute_type="auto")
-    segments, info = model.transcribe(
-        str(video), language=None if lang == "auto" else lang, beam_size=5
-    )
-    log(f"модель {model_name}, язык {info.language}, длительность {info.duration:.0f} с")
-    duration = info.duration
+    if not model_is_downloaded(model_name):
+        raise VidnotesError(f"модель не скачана: {model_path(model_name)}")
+
+    model = Model(str(model_path(model_name)), language=None if lang == "auto" else lang,
+                  print_progress=False, redirect_whispercpp_logs_to=False)
+    log(f"модель {model_name}, язык {lang}")
 
     srt, txt = [], []
-    for i, seg in enumerate(segments, 1):
-        text = seg.text.strip()
-        log(f"[{srt_time(seg.start)}] {text}")
-        srt.append(f"{i}\n{srt_time(seg.start)} --> {srt_time(seg.end)}\n{text}\n")
+
+    def on_segment(segment):
+        text = segment.text.strip()
+        # таймкоды whisper.cpp приходят в сотых долях секунды
+        start, finish = segment.t0 / 100, segment.t1 / 100
+        log(f"[{srt_time(start)}] {text}")
+        srt.append(f"{len(srt) + 1}\n{srt_time(start)} --> {srt_time(finish)}\n{text}\n")
         txt.append(text)
+
+    model.transcribe(str(video), new_segment_callback=on_segment)
     if not srt:
         raise VidnotesError("речи в файле не нашлось")
     (out / "transcript.srt").write_text("\n".join(srt), encoding="utf-8")
     (out / "transcript.txt").write_text("\n".join(txt), encoding="utf-8")
-    return duration
+    return video_duration(video)
 
 
 def pick_moments(out, count, agent=DEFAULT_AGENT, log=print):
@@ -234,8 +242,8 @@ def grab_frames(video, out, moments, log=print):
     return names
 
 
-def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=print):
-    """Весь путь от видео до markdown. Возвращает путь к .md."""
+def prepare(video, lang="auto", dest=None, log=print):
+    """Первая половина: транскрипт. Отдаёт папку, длительность и сколько моментов брать."""
     video = Path(video)
     if not video.is_file():
         raise VidnotesError(f"нет файла: {video}")
@@ -245,14 +253,12 @@ def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=prin
 
     log("[1/3] транскрипт…")
     duration = transcribe(video, lang, out, log=log)
+    return out, auto_count(duration)
 
-    if count is None:
-        count = auto_count(duration)
-        log(f"беру {count} моментов — по одному примерно на две минуты записи")
-    log(f"[2/3] {agent} выбирает моменты…")
-    moments = pick_moments(out, count, agent, log=log)
 
-    log("[3/3] скриншоты…")
+def assemble(video, out, moments, log=print):
+    """Вторая половина: кадры и markdown по готовому списку моментов."""
+    video = Path(video)
     names = grab_frames(video, out, moments, log=log)
     moments = moments[: len(names)]
 
@@ -264,10 +270,30 @@ def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=prin
         (out / "transcript.txt").read_text(encoding="utf-8"),
     ]
 
-    notes = base / (video.stem + "_notes.md")
+    notes = out.parent / (video.stem + "_notes.md")
     notes.write_text("\n".join(lines), encoding="utf-8")
     log(f"готово: {notes}")
     return notes
+
+
+def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=print):
+    """Весь путь целиком, с выбором моментов через внешнего агента."""
+    out, auto = prepare(video, lang, dest, log=log)
+    if count is None:
+        count = auto
+        log(f"беру {count} моментов — по одному примерно на две минуты записи")
+    log(f"[2/3] {agent} выбирает моменты…")
+    moments = pick_moments(out, count, agent, log=log)
+    return assemble(video, out, moments, log=log)
+
+
+def read_moments(path):
+    """Читает «HH:MM:SS | подпись» из файла — им плагин передаёт выбор Claude."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    moments = [m.groups() for m in map(MOMENT.match, lines) if m]
+    if not moments:
+        raise VidnotesError(f"в {path} нет строк вида «HH:MM:SS | подпись»")
+    return moments
 
 
 def main():
@@ -278,20 +304,53 @@ def main():
     ap = argparse.ArgumentParser(
         prog="vidnotes", description="Видео → markdown: транскрипт и скриншоты ключевых мест"
     )
-    ap.add_argument("video", type=Path)
+    ap.add_argument("video", type=Path, nargs="?")
     ap.add_argument("lang", nargs="?", default="auto", help="язык речи: ru, en, … (по умолчанию auto)")
     ap.add_argument(
         "count", nargs="?", type=int,
         help="сколько моментов (по умолчанию — по одному на две минуты записи)",
     )
     ap.add_argument("-o", "--out", type=Path, help="куда положить результат (по умолчанию рядом с видео)")
+    ap.add_argument(
+        "--transcribe-only", action="store_true",
+        help="только расшифровать: моменты выберет тот, кто вызвал (так работает плагин)",
+    )
+    ap.add_argument(
+        "--moments", type=Path,
+        help="взять моменты из файла «HH:MM:SS | подпись» и собрать markdown",
+    )
+    ap.add_argument(
+        "--download-model", action="store_true", help="скачать модель и выйти"
+    )
     args = ap.parse_args()
+
     try:
-        run(
-            args.video, args.lang, args.count,
-            agent=os.environ.get("VIDNOTES_AGENT", DEFAULT_AGENT),
-            dest=args.out,
-        )
+        if args.download_model:
+            if model_is_downloaded():
+                print(f"модель уже на месте: {model_path()}")
+                return
+            size = model_size()
+            print(f"качаю {MODEL_NAME}" + (f" ({human_size(size)})" if size else "") + "…")
+            download_model(on_progress=lambda pct: print(f"\r{pct:.0f}%", end="", flush=True))
+            print(f"\rготово: {model_path()}")
+            return
+
+        if not args.video:
+            ap.error("нужен файл видео")
+
+        if args.transcribe_only:
+            out, count = prepare(args.video, args.lang, args.out)
+            print(f"транскрипт: {out / 'transcript.srt'}")
+            print(f"моментов брать: {args.count or count}")
+        elif args.moments:
+            out = (args.out or args.video.parent) / (args.video.stem + "_notes")
+            assemble(args.video, out, read_moments(args.moments))
+        else:
+            run(
+                args.video, args.lang, args.count,
+                agent=os.environ.get("VIDNOTES_AGENT", DEFAULT_AGENT),
+                dest=args.out,
+            )
     except VidnotesError as e:
         sys.exit(f"vidnotes: {e}")
 

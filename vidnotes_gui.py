@@ -174,24 +174,10 @@ class App:
         self.progress["value"] = 0
 
         def job():
-            download_model(MODEL_NAME, tqdm_class=self.make_tqdm())
+            download_model(MODEL_NAME, on_progress=lambda pct: self.events.put(("progress", pct)))
             self.events.put(("model_done", None))
 
         self.work(job)
-
-    def make_tqdm(self):
-        """tqdm-совместимый класс, который вместо консоли двигает прогрессбар окна."""
-        from tqdm.auto import tqdm as base
-        events = self.events
-
-        class GuiTqdm(base):
-            def update(self, n=1):
-                out = super().update(n)
-                if self.total:
-                    events.put(("progress", self.n / self.total * 100))
-                return out
-
-        return GuiTqdm
 
     def on_pick_video(self):
         path = filedialog.askopenfilename(title="Выбери видео", filetypes=FILETYPES)
