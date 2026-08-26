@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from vidnotes import (
     DEFAULT_AGENT,
     MODEL_NAME,
+    model_path,
     VIDEO_SUFFIXES,
     VidnotesError,
     download_model,
@@ -36,6 +37,8 @@ class App:
         self.video = None
         self.result_dir = None
         self.workdir = None
+        # в WHISPER_MODEL может лежать путь к файлу — в окне показываем имя, а не всю строку
+        self.model_title = model_path().stem.removeprefix("ggml-")
 
         root.title("vidnotes")
         root.minsize(620, 480)
@@ -147,7 +150,7 @@ class App:
     def refresh_model_state(self):
         self.model_ready = model_is_downloaded()
         state = "скачана" if self.model_ready else "не скачана"
-        self.model_label["text"] = f"Модель {MODEL_NAME}: {state}"
+        self.model_label["text"] = f"Модель {self.model_title}: {state}"
         self.model_btn["text"] = "Скачать модель"
         self.model_btn["state"] = "disabled" if self.model_ready else "normal"
         self.ask_model_size()
@@ -164,9 +167,9 @@ class App:
 
     def show_model_size(self, size):
         if self.model_ready:
-            self.model_label["text"] = f"Модель {MODEL_NAME}: скачана, занимает {size}"
+            self.model_label["text"] = f"Модель {self.model_title}: скачана, занимает {size}"
         else:
-            self.model_label["text"] = f"Модель {MODEL_NAME}: не скачана"
+            self.model_label["text"] = f"Модель {self.model_title}: не скачана"
             self.model_btn["text"] = f"Скачать модель ({size})"
 
     def on_download(self):
