@@ -8,8 +8,8 @@
     {
       "name": "vidnotes",
       "source": "./",
-      "description": "Видео → markdown: расшифровка речи и скриншоты ключевых мест"
+      "description": "Video → markdown: local speech recognition and screenshots of the key moments"
     }
   ],
-  "description": "Конспекты видеозаписей: локальная расшифровка речи и скриншоты ключевых мест"
+  "description": "Notes from video recordings: local speech recognition and screenshots of the key moments"
 }

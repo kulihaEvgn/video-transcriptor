@@ -2,7 +2,7 @@
   "name": "vidnotes",
   "displayName": "vidnotes",
   "version": "0.2.2",
-  "description": "Расшифровка видео и markdown-конспект со скриншотами ключевых мест",
+  "description": "Video transcription and a markdown summary with screenshots of the key moments",
   "author": {
     "name": "Eugene",
     "url": "https://github.com/kulihaEvgn"
