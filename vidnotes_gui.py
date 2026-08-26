@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Окно для vidnotes: скачать модель → выбрать видео → сохранить результат."""
+import multiprocessing
 import queue
 import shutil
 import subprocess
@@ -271,6 +272,7 @@ def reveal(path):
 
 
 def main():
+    multiprocessing.freeze_support()  # иначе в сборке дочерний процесс открывает второе окно
     root = tk.Tk()
     App(root)
     root.mainloop()

@@ -41,7 +41,7 @@ jobs:
             --collect-all ctranslate2 \
             --collect-all av \
             --collect-all tokenizers \
-            --collect-all onnxruntime \
+            --exclude-module onnxruntime \
             --hidden-import vidnotes \
             --paths . \
             vidnotes_gui.py

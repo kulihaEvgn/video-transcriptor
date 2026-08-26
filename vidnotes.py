@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import multiprocessing
 import os
 import re
 import subprocess
@@ -270,6 +271,10 @@ def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=prin
 
 
 def main():
+    # в собранном виде дочерний процесс перезапускает сам бинарь: без этого он
+    # прилетает в argparse с флагами интерпретатора и роняет разбор аргументов
+    multiprocessing.freeze_support()
+
     ap = argparse.ArgumentParser(
         prog="vidnotes", description="Видео → markdown: транскрипт и скриншоты ключевых мест"
     )
