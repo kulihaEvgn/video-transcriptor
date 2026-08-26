@@ -15,6 +15,29 @@ You also need [uv](https://docs.astral.sh/uv/) — it brings up the environment 
 
 The model (about 550 MB) is downloaded on the first video, after asking. It stays on disk after that.
 
+## Updates
+
+New versions do not arrive on their own — an installed plugin is pinned to the version it was installed at.
+To get them without thinking about it, add `autoUpdate` to the marketplace entry in `~/.claude/settings.json`:
+
+```json
+"extraKnownMarketplaces": {
+  "vidnotes": {
+    "source": { "source": "github", "repo": "kulihaEvgn/video-transcriptor" },
+    "autoUpdate": true
+  }
+}
+```
+
+Or pull them by hand when you remember to — both steps, the first one only refreshes the marketplace:
+
+```
+/plugin marketplace update vidnotes
+/plugin update vidnotes@vidnotes
+```
+
+Either way the new version applies after a restart.
+
 ## Using it
 
 Just tell Claude what you want:
