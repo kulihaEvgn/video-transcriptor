@@ -75,6 +75,37 @@ def model_is_downloaded(name=MODEL_NAME):
         return False
 
 
+def human_size(num_bytes):
+    if num_bytes >= 1024 ** 3:
+        return f"{num_bytes / 1024 ** 3:.1f} ГБ".replace(".", ",")
+    return f"{num_bytes / 1024 ** 2:.0f} МБ"
+
+
+def model_size(name=MODEL_NAME):
+    """Сколько весит модель. Из кэша, если она уже скачана, иначе спрашиваем Hugging Face.
+
+    Отдаёт None, если модели нет и до сети не достучались — врать размером не нужно.
+    """
+    from fnmatch import fnmatch
+
+    from huggingface_hub import HfApi, snapshot_download
+
+    try:
+        path = snapshot_download(_repo_id(name), allow_patterns=MODEL_FILES, local_files_only=True)
+        return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+    except Exception:
+        pass
+    try:
+        info = HfApi().model_info(_repo_id(name), files_metadata=True)
+        return sum(
+            f.size or 0
+            for f in info.siblings
+            if any(fnmatch(f.rfilename, pattern) for pattern in MODEL_FILES)
+        )
+    except Exception:
+        return None
+
+
 def download_model(name=MODEL_NAME, tqdm_class=None):
     from huggingface_hub import snapshot_download
 

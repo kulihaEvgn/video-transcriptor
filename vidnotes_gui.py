@@ -15,7 +15,9 @@ from vidnotes import (
     VIDEO_SUFFIXES,
     VidnotesError,
     download_model,
+    human_size,
     model_is_downloaded,
+    model_size,
     run,
 )
 
@@ -98,6 +100,8 @@ class App:
                 self.log(payload)
             elif kind == "progress":
                 self.progress["value"] = payload
+            elif kind == "model_size":
+                self.show_model_size(payload)
             elif kind == "model_done":
                 self.refresh_model_state()
                 self.busy(False)
@@ -140,12 +144,29 @@ class App:
     # --- кнопки ---
 
     def refresh_model_state(self):
-        if model_is_downloaded():
-            self.model_label["text"] = f"Модель {MODEL_NAME}: скачана"
-            self.model_btn["state"] = "disabled"
+        self.model_ready = model_is_downloaded()
+        state = "скачана" if self.model_ready else "не скачана"
+        self.model_label["text"] = f"Модель {MODEL_NAME}: {state}"
+        self.model_btn["text"] = "Скачать модель"
+        self.model_btn["state"] = "disabled" if self.model_ready else "normal"
+        self.ask_model_size()
+
+    def ask_model_size(self):
+        """Вес модели узнаём в стороне: у скачанной он из кэша, у прочей — из сети."""
+
+        def job():
+            size = model_size()
+            if size:
+                self.events.put(("model_size", human_size(size)))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def show_model_size(self, size):
+        if self.model_ready:
+            self.model_label["text"] = f"Модель {MODEL_NAME}: скачана, занимает {size}"
         else:
-            self.model_label["text"] = f"Модель {MODEL_NAME}: не скачана (~1,6 ГБ)"
-            self.model_btn["state"] = "normal"
+            self.model_label["text"] = f"Модель {MODEL_NAME}: не скачана"
+            self.model_btn["text"] = f"Скачать модель ({size})"
 
     def on_download(self):
         self.log(f"качаю модель {MODEL_NAME}…")
