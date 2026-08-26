@@ -127,7 +127,30 @@ def test_assemble_keeps_captions_with_their_frames():
         assert "## 00:00:03 — Три [спорно]" in text
         assert "Два" not in text
         # скобки из подписи в ссылку не попадают, иначе картинка не отрисуется
-        assert "![00:00:03](video_notes/shots/03_00-00-03.jpg)" in text
+        assert "![00:00:03](shots/03_00-00-03.jpg)" in text
+
+
+def test_assemble_puts_notes_inside_its_folder():
+    """Конспект живёт внутри своей папки: ссылка не тащит имя видео, разлучить нечего."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "Screen Rec\u00a02026 (1)_notes"
+        (out / "shots").mkdir(parents=True)
+        (out / "shots" / "01_00-00-01.jpg").write_bytes(b"jpg")
+        (out / "transcript.txt").write_text("речь", encoding="utf-8")
+        moments = [("00:00:01", "Раз")]
+        real = vidnotes.grab_frames
+        vidnotes.grab_frames = lambda video, out, moments, log=print: [
+            (moments[0], "01_00-00-01.jpg"),
+        ]
+        try:
+            notes = assemble(Path(tmp) / "video.mp4", out, moments, log=lambda _: None)
+        finally:
+            vidnotes.grab_frames = real
+        assert notes.parent == out, notes
+        link = notes.read_text(encoding="utf-8").split("](")[1].split(")")[0]
+        # имя папки с пробелами в ссылку не попадает — иначе markdown оборвёт URL
+        assert link == "shots/01_00-00-01.jpg", link
+        assert (notes.parent / link).exists(), link
 
 
 def test_assemble_without_transcript_fails():

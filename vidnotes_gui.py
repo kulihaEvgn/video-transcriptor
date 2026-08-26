@@ -205,11 +205,11 @@ class App:
         lang, video = self.lang.get(), self.video
 
         def job():
-            notes = run(
+            run(
                 video, lang, dest=self.workdir,
                 log=lambda line: self.events.put(("log", line)),
             )
-            self.result_dir = notes.parent
+            self.result_dir = self.workdir  # конспект лежит внутри папки, переносим её целиком
             self.events.put(("run_done", None))
 
         self.work(job)

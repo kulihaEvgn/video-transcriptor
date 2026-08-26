@@ -299,13 +299,13 @@ def assemble(video, out, moments, log=print):
 
     lines = [f"# {video.name}", ""]
     for (ts, caption), name in picked:
-        lines += [f"## {ts} — {caption}", "", f"![{ts}]({out.name}/shots/{name})", ""]
+        lines += [f"## {ts} — {caption}", "", f"![{ts}](shots/{name})", ""]
     lines += [
         "---", "", "## Полный транскрипт", "",
         transcript.read_text(encoding="utf-8"),
     ]
 
-    notes = out.parent / (video.stem + "_notes.md")
+    notes = out / (video.stem + "_notes.md")  # внутри папки: пару .md + кадры не разлучить
     notes.write_text("\n".join(lines) + "\n", encoding="utf-8")
     log(f"готово: {notes}")
     return notes

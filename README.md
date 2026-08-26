@@ -37,8 +37,8 @@ Next to the video:
 
 ```
 standup.mp4
-standup_notes.md          ← this is what you read
 standup_notes/
+  standup_notes.md        ← this is what you read
   transcript.srt          lines with timecodes
   transcript.txt          plain text
   moments.txt             the picked moments: timecode | caption
@@ -46,7 +46,7 @@ standup_notes/
   …
 ```
 
-Images are linked by relative path, so the `_notes` folder has to travel together with the `.md`.
+The notes live inside the folder next to the frames they link to — move or share the whole folder, a lone `.md` loses its images.
 
 ## How long it takes
 
