@@ -1,11 +1,15 @@
 {
   "name": "vidnotes",
-  "owner": { "name": "Eugene", "url": "https://github.com/kulihaEvgn" },
+  "owner": {
+    "name": "Eugene",
+    "url": "https://github.com/kulihaEvgn"
+  },
   "plugins": [
     {
       "name": "vidnotes",
       "source": "./",
       "description": "Видео → markdown: расшифровка речи и скриншоты ключевых мест"
     }
-  ]
+  ],
+  "description": "Конспекты видеозаписей: локальная расшифровка речи и скриншоты ключевых мест"
 }
