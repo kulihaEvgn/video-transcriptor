@@ -35,6 +35,7 @@ class App:
         self.root = root
         self.events = queue.Queue()
         self.video = None
+        self.running = False
         self.result_dir = None
         self.workdir = None
         # в WHISPER_MODEL может лежать путь к файлу — в окне показываем имя, а не всю строку
@@ -127,6 +128,7 @@ class App:
         self.log_box["state"] = "disabled"
 
     def busy(self, on):
+        self.running = on
         state = "disabled" if on else "normal"
         self.start_btn["state"] = state if self.video else "disabled"
         self.model_btn["state"] = "disabled" if (on or model_is_downloaded()) else "normal"
@@ -190,12 +192,15 @@ class App:
         self.video_label["text"] = f"Видео: {self.video.name}"
         self.save_btn["state"] = "disabled"
         self.result_dir = None
-        self.busy(False)
+        self.busy(self.running)
 
     def on_start(self):
         if not model_is_downloaded():
             messagebox.showwarning("vidnotes", "Сначала скачай модель")
             return
+        self.result_dir = None
+        self.save_btn["state"] = "disabled"
+        self.progress["value"] = 0  # иначе полоска висит на 100% с прошлой закачки модели
         self.workdir = Path(tempfile.mkdtemp(prefix="vidnotes_"))
         lang, video = self.lang.get(), self.video
 
@@ -221,7 +226,10 @@ class App:
             ),
         )
         self.log(f"сохранено в {target}" + (f", пропущено: {skipped}" if skipped else ""))
-        self.save_btn["state"] = "disabled"
+        if not skipped:
+            # пропущенное осталось в рабочей папке — кнопку не гасим, дадим сохранить ещё раз
+            self.save_btn["state"] = "disabled"
+            shutil.rmtree(self.workdir, ignore_errors=True)
         if moved:
             reveal(Path(target))
 

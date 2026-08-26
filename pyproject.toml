@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "pywhispercpp>=1.5",
     "av>=13",
+    "numpy",
 ]
 
 [project.scripts]

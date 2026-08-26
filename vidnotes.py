@@ -8,13 +8,16 @@ import json
 import multiprocessing
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 MOMENT = re.compile(r"^(\d{2}:\d{2}:\d{2})(?:[.,]\d{1,3})?\s*\|\s*(.+)$")
-DEFAULT_AGENT = "claude -p"
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
+CLAUDE_AGENT = "claude -p"  # родной путь: у него просим JSON с замером токенов
+DEFAULT_AGENT = os.environ.get("VIDNOTES_AGENT", CLAUDE_AGENT)
+AUDIO_RATE = 16000  # whisper.cpp работает только на 16 кГц моно
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3-turbo-q5_0")
 VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv")
 
 PROMPT = """Below is an SRT transcript of a video. Pick the {count} most important moments \
@@ -43,9 +46,6 @@ def srt_time(seconds):
     m, ms = divmod(ms, 60_000)
     s, ms = divmod(ms, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3-turbo-q5_0")
 
 
 def model_path(name=MODEL_NAME):
@@ -110,11 +110,31 @@ def human_size(num_bytes):
     return f"{num_bytes / 1024 ** 2:.0f} МБ"
 
 
-def video_duration(video):
-    import av
+def read_audio(video, rate=AUDIO_RATE):
+    """Звук в виде float32-моно, как ждёт whisper.cpp.
 
+    Декодируем сами через av: pywhispercpp для не-WAV зовёт системный ffmpeg, а его
+    у человека, который просто поставил плагин, обычно нет. Заодно узнаём точную
+    длительность — в контейнере её может не быть (webm и mkv из записи экрана).
+    """
+    import av
+    import numpy as np
+
+    # ponytail: весь звук держим в памяти, ~230 МБ на час записи; если понадобятся
+    # многочасовые файлы — отдавать whisper.cpp кусками
+    buf = bytearray()
     with av.open(str(video)) as container:
-        return (container.duration or 0) / 1_000_000
+        if not container.streams.audio:
+            raise VidnotesError(f"в файле нет звуковой дорожки: {video}")
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=rate)
+        for frame in container.decode(container.streams.audio[0]):
+            for chunk in resampler.resample(frame):
+                buf += chunk.to_ndarray().tobytes()
+        for chunk in resampler.resample(None):  # хвост, который ресемплер придержал
+            buf += chunk.to_ndarray().tobytes()
+    if not buf:
+        raise VidnotesError(f"звуковая дорожка пустая: {video}")
+    return np.frombuffer(buf, dtype=np.float32)
 
 
 def transcribe(video, lang, out, log=print, model_name=MODEL_NAME):
@@ -123,6 +143,8 @@ def transcribe(video, lang, out, log=print, model_name=MODEL_NAME):
     if not model_is_downloaded(model_name):
         raise VidnotesError(f"модель не скачана: {model_path(model_name)}")
 
+    log("читаю звук…")
+    audio = read_audio(video)
     model = Model(str(model_path(model_name)), language=None if lang == "auto" else lang,
                   print_progress=False, redirect_whispercpp_logs_to=False)
     log(f"модель {model_name}, язык {lang}")
@@ -137,12 +159,12 @@ def transcribe(video, lang, out, log=print, model_name=MODEL_NAME):
         srt.append(f"{len(srt) + 1}\n{srt_time(start)} --> {srt_time(finish)}\n{text}\n")
         txt.append(text)
 
-    model.transcribe(str(video), new_segment_callback=on_segment)
+    model.transcribe(audio, new_segment_callback=on_segment)
     if not srt:
         raise VidnotesError("речи в файле не нашлось")
     (out / "transcript.srt").write_text("\n".join(srt), encoding="utf-8")
     (out / "transcript.txt").write_text("\n".join(txt), encoding="utf-8")
-    return video_duration(video)
+    return len(audio) / AUDIO_RATE
 
 
 def pick_moments(out, count, agent=DEFAULT_AGENT, log=print):
@@ -150,21 +172,25 @@ def pick_moments(out, count, agent=DEFAULT_AGENT, log=print):
     prompt = PROMPT.format(count=count)
     srt = (out / "transcript.srt").read_text(encoding="utf-8")
 
-    if agent == DEFAULT_AGENT:
+    if agent == CLAUDE_AGENT:
         # родной путь: промпт аргументом, транскрипт на stdin, ответ с замером токенов
         raw = _run_agent(agent.split() + ["--output-format", "json", prompt], srt)
         (out / "agent.json").write_text(raw, encoding="utf-8")
+        # ответ достаём первым делом: сменится формат замера — счёт не сойдётся,
+        # но моменты потерять из-за этого нельзя
+        answer, usage, cost = raw, {}, None
         try:
             data = json.loads(raw)
-            answer = data.get("result", "")
-            u = data["usage"]
-            spent = u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"]
-            log(
-                f"{spent} токенов на вход ({u['cache_read_input_tokens']} из кэша), "
-                f"{u['output_tokens']} на выход, ${data['total_cost_usd']}"
-            )
-        except (json.JSONDecodeError, KeyError):
-            answer = raw
+            answer = data.get("result") or raw
+            usage, cost = data.get("usage") or {}, data.get("total_cost_usd")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        if usage:
+            spent = sum(usage.get(k, 0) for k in
+                        ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            log(f"{spent} токенов на вход ({usage.get('cache_read_input_tokens', 0)} из кэша), "
+                f"{usage.get('output_tokens', 0)} на выход"
+                + (f", ${cost}" if cost else ""))
     else:
         # любой другой агент: всё одним куском на stdin, ответ текстом на stdout
         answer = _run_agent(agent.split(), f"{prompt}\n\n{srt}")
@@ -193,7 +219,7 @@ def _run_agent(cmd, stdin_text):
 
 def ts_seconds(ts):
     h, m, s = ts.split(":")
-    return int(h) * 3600 + int(m) * 60 + float(s)
+    return int(h) * 3600 + int(m) * 60 + float(s.replace(",", "."))
 
 
 def save_jpeg(frame, path):
@@ -217,11 +243,15 @@ def grab_frames(video, out, moments, log=print):
     import av
 
     shots = out / "shots"
-    shots.mkdir(exist_ok=True)
-    names = []
+    shutil.rmtree(shots, ignore_errors=True)  # иначе кадры прошлого прогона остаются в папке
+    shots.mkdir(parents=True)
+    picked = []
     with av.open(str(video)) as container:
+        if not container.streams.video:
+            raise VidnotesError(f"в файле нет видеодорожки: {video}")
         stream = container.streams.video[0]
-        for i, (ts, _) in enumerate(moments, 1):
+        for i, moment in enumerate(moments, 1):
+            ts = moment[0]
             want = ts_seconds(ts)
             # seek встаёт на ключевой кадр не позже нужной секунды, дальше доходим декодированием
             container.seek(int(want / stream.time_base), stream=stream)
@@ -231,15 +261,18 @@ def grab_frames(video, out, moments, log=print):
                 if candidate.time is not None and candidate.time >= want - 0.001:
                     frame = candidate
                     break
-            frame = frame or last
+            # last берём только если он рядом с нужной секундой: таймкод за концом
+            # записи иначе молча получит последний кадр видео под чужой подписью
+            if frame is None and last is not None and abs((last.time or 0) - want) <= 2:
+                frame = last
             if frame is None:
                 log(f"кадр на {ts} не нашёлся, пропускаю")
                 continue
             name = f"{i:02d}_{ts.replace(':', '-')}.jpg"
             save_jpeg(frame, shots / name)
-            names.append(name)
-    log(f"кадров вырезано: {len(names)}")
-    return names
+            picked.append((moment, name))
+    log(f"кадров вырезано: {len(picked)}")
+    return picked
 
 
 def prepare(video, lang="auto", dest=None, log=print):
@@ -259,19 +292,21 @@ def prepare(video, lang="auto", dest=None, log=print):
 def assemble(video, out, moments, log=print):
     """Вторая половина: кадры и markdown по готовому списку моментов."""
     video = Path(video)
-    names = grab_frames(video, out, moments, log=log)
-    moments = moments[: len(names)]
+    transcript = out / "transcript.txt"
+    if not transcript.is_file():
+        raise VidnotesError(f"нет транскрипта: {transcript} — сначала расшифруй видео")
+    picked = grab_frames(video, out, moments, log=log)
 
     lines = [f"# {video.name}", ""]
-    for (ts, caption), name in zip(moments, names):
-        lines += [f"## {ts} — {caption}", "", f"![{ts} — {caption}]({out.name}/shots/{name})", ""]
+    for (ts, caption), name in picked:
+        lines += [f"## {ts} — {caption}", "", f"![{ts}]({out.name}/shots/{name})", ""]
     lines += [
         "---", "", "## Полный транскрипт", "",
-        (out / "transcript.txt").read_text(encoding="utf-8"),
+        transcript.read_text(encoding="utf-8"),
     ]
 
     notes = out.parent / (video.stem + "_notes.md")
-    notes.write_text("\n".join(lines), encoding="utf-8")
+    notes.write_text("\n".join(lines) + "\n", encoding="utf-8")
     log(f"готово: {notes}")
     return notes
 
@@ -346,11 +381,7 @@ def main():
             out = (args.out or args.video.parent) / (args.video.stem + "_notes")
             assemble(args.video, out, read_moments(args.moments))
         else:
-            run(
-                args.video, args.lang, args.count,
-                agent=os.environ.get("VIDNOTES_AGENT", DEFAULT_AGENT),
-                dest=args.out,
-            )
+            run(args.video, args.lang, args.count, dest=args.out)
     except VidnotesError as e:
         sys.exit(f"vidnotes: {e}")
 
