@@ -1,0 +1,27 @@
+[project]
+name = "vidnotes"
+version = "0.1.0"
+description = "Video → markdown: transcript and screenshots of key moments"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "faster-whisper>=1.1",
+    "imageio-ffmpeg>=0.5",
+]
+
+[project.scripts]
+vidnotes = "vidnotes:main"
+
+[project.gui-scripts]
+vidnotes-gui = "vidnotes_gui:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["vidnotes.py", "vidnotes_gui.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["vidnotes.py", "vidnotes_gui.py", "README.md", "CLAUDE.md", "LICENSE"]
