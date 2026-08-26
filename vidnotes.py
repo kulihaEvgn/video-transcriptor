@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,19 +34,6 @@ def auto_count(duration_seconds):
 
 class VidnotesError(Exception):
     """Понятная пользователю ошибка: показывается и в консоли, и в окне."""
-
-
-def ffmpeg_exe():
-    """Системный ffmpeg, иначе бинарь из колеса imageio-ffmpeg."""
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-    try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except ImportError:
-        raise VidnotesError("нет ffmpeg — поставь его или `pip install imageio-ffmpeg`")
 
 
 def srt_time(seconds):
@@ -165,19 +151,53 @@ def _run_agent(cmd, stdin_text):
     return done.stdout
 
 
+def ts_seconds(ts):
+    h, m, s = ts.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def save_jpeg(frame, path):
+    """Кодируем кадр тем же av, что уже декодирует видео — второй ffmpeg в сборке не нужен."""
+    import av
+
+    with av.open(str(path), "w", format="mjpeg") as out:
+        stream = out.add_stream("mjpeg", rate=1)
+        stream.width, stream.height = frame.width, frame.height
+        stream.pix_fmt = "yuvj420p"
+        stream.codec_context.qmin = stream.codec_context.qmax = 2  # как -q:v 2 у ffmpeg
+        frame = frame.reformat(format="yuvj420p")
+        frame.pts = None
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+
+
 def grab_frames(video, out, moments, log=print):
-    ffmpeg = ffmpeg_exe()
+    import av
+
     shots = out / "shots"
     shots.mkdir(exist_ok=True)
     names = []
-    for i, (ts, _) in enumerate(moments, 1):
-        name = f"{i:02d}_{ts.replace(':', '-')}.jpg"
-        subprocess.run(
-            [ffmpeg, "-nostdin", "-v", "error", "-y", "-ss", ts, "-i", str(video),
-             "-frames:v", "1", "-q:v", "2", str(shots / name)],
-            check=True,
-        )
-        names.append(name)
+    with av.open(str(video)) as container:
+        stream = container.streams.video[0]
+        for i, (ts, _) in enumerate(moments, 1):
+            want = ts_seconds(ts)
+            # seek встаёт на ключевой кадр не позже нужной секунды, дальше доходим декодированием
+            container.seek(int(want / stream.time_base), stream=stream)
+            frame = last = None
+            for candidate in container.decode(stream):
+                last = candidate
+                if candidate.time is not None and candidate.time >= want - 0.001:
+                    frame = candidate
+                    break
+            frame = frame or last
+            if frame is None:
+                log(f"кадр на {ts} не нашёлся, пропускаю")
+                continue
+            name = f"{i:02d}_{ts.replace(':', '-')}.jpg"
+            save_jpeg(frame, shots / name)
+            names.append(name)
     log(f"кадров вырезано: {len(names)}")
     return names
 
@@ -202,6 +222,7 @@ def run(video, lang="auto", count=None, agent=DEFAULT_AGENT, dest=None, log=prin
 
     log("[3/3] скриншоты…")
     names = grab_frames(video, out, moments, log=log)
+    moments = moments[: len(names)]
 
     lines = [f"# {video.name}", ""]
     for (ts, caption), name in zip(moments, names):

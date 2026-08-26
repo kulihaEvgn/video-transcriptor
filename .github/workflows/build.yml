@@ -18,6 +18,8 @@ jobs:
           - os: macos-14
             name: macos
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # иначе шаг релиза упирается в 403
     defaults:
       run:
         shell: bash # на windows-раннере это git-bash: одна команда на обе системы
@@ -40,7 +42,6 @@ jobs:
             --collect-all av \
             --collect-all tokenizers \
             --collect-all onnxruntime \
-            --collect-all imageio_ffmpeg \
             --hidden-import vidnotes \
             --paths . \
             vidnotes_gui.py

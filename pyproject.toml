@@ -7,7 +7,6 @@ requires-python = ">=3.9"
 license = "MIT"
 dependencies = [
     "faster-whisper>=1.1",
-    "imageio-ffmpeg>=0.5",
 ]
 
 [project.scripts]
